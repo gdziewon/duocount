@@ -1,6 +1,8 @@
 package org.example.duocount;
 
 import com.google.gson.JsonObject;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.sql.*;
 import java.util.ArrayList;
@@ -8,6 +10,7 @@ import java.util.HashMap;
 import java.util.List;
 
 public class Database {
+    private static final Logger logger = LoggerFactory.getLogger(Database.class);
     private static final String URL = "jdbc:mysql://localhost:3306/duocount";
     private static final String USER = "root";
     private static final String PASSWORD = "zaq1@WSX";
@@ -15,7 +18,7 @@ public class Database {
     static {
         try {
             Class.forName("com.mysql.cj.jdbc.Driver");
-            System.out.println("MySQL Driver Loaded Successfully.");
+            logger.info("MySQL Driver Loaded Successfully.");
         } catch (ClassNotFoundException e) {
             System.err.println("MySQL Driver not found.");
             throw new RuntimeException("Failed to load MySQL driver", e);
@@ -24,22 +27,6 @@ public class Database {
 
     public static Connection getConnection() throws SQLException {
         return DriverManager.getConnection(URL, USER, PASSWORD);
-    }
-
-    public static void initializeUserBalances(int walletId, List<Integer> userIds) {
-        String query = "INSERT INTO user_balances (wallet_id, user_id, balance) VALUES (?, ?, 0) " +
-                "ON DUPLICATE KEY UPDATE balance = balance";
-        try (Connection conn = getConnection();
-             PreparedStatement stmt = conn.prepareStatement(query)) {
-            for (int userId : userIds) {
-                stmt.setInt(1, walletId);
-                stmt.setInt(2, userId);
-                stmt.addBatch();
-            }
-            stmt.executeBatch();
-        } catch (SQLException e) {
-            e.printStackTrace();
-        }
     }
 
 
@@ -61,7 +48,7 @@ public class Database {
                 return keys.getInt(1);
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            logger.error(e.getMessage());
         }
         return -1;
     }
@@ -84,7 +71,7 @@ public class Database {
                 return keys.getInt(1);
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            logger.error(e.getMessage());
         }
         return -1;
     }
@@ -108,20 +95,19 @@ public class Database {
                 updateUserBalance(walletId, payerId, amount);
 
                 double share = amount / participantIds.size();
-                System.out.println("Calculated share per participant: " + share);
+                logger.info("Calculated share per participant: {}", share);
 
                 for (int participantId : participantIds) {
                     addExpenseParticipant(expenseId, participantId);
                     updateUserBalance(walletId, participantId, -share);
                 }
 
-                System.out.println("Adding expense: Wallet ID = " + walletId + ", Payer ID = " + payerId +
-                        ", Description = " + description + ", Amount = " + amount + ", Participants = " + participantIds);
+                logger.info("Adding expense: Wallet ID = {}, Payer ID = {}, Description = {}, Amount = {}, Participants = {}", walletId, payerId, description, amount, participantIds);
 
                 return expenseId;
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            logger.error(e.getMessage());
         }
         return -1;
     }
@@ -134,9 +120,9 @@ public class Database {
             stmt.setInt(1, expenseId);
             stmt.setInt(2, participantId);
             stmt.executeUpdate();
-            System.out.println(String.format("Added participant ID %d to expense ID %d", participantId, expenseId));
+            logger.info("Added participant ID {} to expense ID {}", participantId, expenseId);
         } catch (SQLException e) {
-            e.printStackTrace();
+            logger.error(e.getMessage());
         }
     }
 
@@ -150,9 +136,9 @@ public class Database {
             stmt.setDouble(3, balanceChange);
             stmt.setDouble(4, balanceChange);
             stmt.executeUpdate();
-            System.out.println("Updating balance: Wallet ID = " + walletId + ", User ID = " + userId + ", Change = " + balanceChange);
+            logger.info("Updating balance: Wallet ID = {}, User ID = {}, Change = {}", walletId, userId, balanceChange);
         } catch (SQLException e) {
-            e.printStackTrace();
+            logger.error(e.getMessage());
         }
     }
 
@@ -166,7 +152,7 @@ public class Database {
                 wallets.add(rs.getString("name"));
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            logger.error(e.getMessage());
         }
         return wallets;
     }
@@ -181,7 +167,7 @@ public class Database {
                 return rs.getInt("id");
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            logger.error(e.getMessage());
         }
         return -1;
     }
@@ -196,14 +182,14 @@ public class Database {
                 return rs.getInt("id");
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            logger.error(e.getMessage());
         }
         return -1;
     }
 
     public static List<JsonObject> getWalletDetails(int walletId) {
         String query = """
-        SELECT e.description, e.amount, u.name AS payer
+        SELECT e.id, e.description, e.amount, u.name AS payer
         FROM expenses e
         JOIN users u ON e.payer_id = u.id
         WHERE e.wallet_id = ?
@@ -215,14 +201,15 @@ public class Database {
             ResultSet rs = stmt.executeQuery();
             while (rs.next()) {
                 JsonObject expense = new JsonObject();
+                expense.addProperty("id", rs.getInt("id"));
                 expense.addProperty("description", rs.getString("description"));
                 expense.addProperty("amount", rs.getDouble("amount"));
                 expense.addProperty("payer", rs.getString("payer"));
                 details.add(expense);
             }
-            System.out.println("Fetching expense details for wallet ID: " + walletId);
+            logger.info("Fetching expense details for wallet ID: {}", walletId);
         } catch (SQLException e) {
-            e.printStackTrace();
+            logger.error(e.getMessage());
         }
         return details;
     }
@@ -248,9 +235,80 @@ public class Database {
                 }
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            logger.error(e.getMessage());
         }
 
         return balances;
     }
+
+    public static boolean deleteExpense(int expenseId, int walletId) {
+        String getExpenseDetailsQuery = "SELECT payer_id, amount, number_of_participants FROM expenses WHERE id = ?";
+        String getParticipantsQuery = "SELECT participant_id FROM expense_participants WHERE expense_id = ?";
+        String deleteExpenseQuery = "DELETE FROM expenses WHERE id = ?";
+        String deleteParticipantsQuery = "DELETE FROM expense_participants WHERE expense_id = ?";
+
+        try (Connection conn = getConnection()) {
+            logger.info("Deleting Expense ID: {} in Wallet ID: {}", expenseId, walletId);
+
+            int payerId;
+            double amount;
+            int numberOfParticipants;
+
+            // fetch expense details
+            try (PreparedStatement stmt = conn.prepareStatement(getExpenseDetailsQuery)) {
+                stmt.setInt(1, expenseId);
+                ResultSet rs = stmt.executeQuery();
+                if (!rs.next()) {
+                    logger.warn("Expense ID not found: {}", expenseId);
+                    return false;
+                }
+                payerId = rs.getInt("payer_id");
+                amount = rs.getDouble("amount");
+                numberOfParticipants = rs.getInt("number_of_participants");
+                logger.info("Expense Details - Payer ID: {}, Amount: {}, Participants: {}", payerId, amount, numberOfParticipants);
+            }
+
+            // fetch participant IDs
+            List<Integer> participantIds = new ArrayList<>();
+            try (PreparedStatement stmt = conn.prepareStatement(getParticipantsQuery)) {
+                stmt.setInt(1, expenseId);
+                ResultSet rs = stmt.executeQuery();
+                while (rs.next()) {
+                    int participantId = rs.getInt("participant_id");
+                    participantIds.add(participantId);
+                    logger.info("Participant ID: {}", participantId);
+                }
+            }
+
+            // update balances
+            double share = amount / numberOfParticipants;
+            for (int participantId : participantIds) {
+                logger.info("Updating Participant ID: {} with Share: {}", participantId, share);
+                updateUserBalance(walletId, participantId, share);
+            }
+            logger.info("Updating Payer ID: {} with Amount: -{}", payerId, amount);
+            updateUserBalance(walletId, payerId, -amount);
+
+            // delete participants
+            try (PreparedStatement stmt = conn.prepareStatement(deleteParticipantsQuery)) {
+                stmt.setInt(1, expenseId);
+                int rowsDeleted = stmt.executeUpdate();
+                logger.info("Deleted Participants for Expense ID: {}, Rows Deleted: {}", expenseId, rowsDeleted);
+            }
+
+            // delete expense
+            try (PreparedStatement stmt = conn.prepareStatement(deleteExpenseQuery)) {
+                stmt.setInt(1, expenseId);
+                int rowsDeleted = stmt.executeUpdate();
+                logger.info("Deleted Expense ID: {}, Rows Deleted: {}", expenseId, rowsDeleted);
+            }
+
+            return true;
+        } catch (SQLException e) {
+            logger.error(e.getMessage());
+        }
+        return false;
+    }
+
+
 }

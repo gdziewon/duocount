@@ -8,8 +8,12 @@ import javafx.geometry.Insets;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
 import javafx.scene.layout.GridPane;
+import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -17,7 +21,9 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+
 public class DuocountClient extends Application {
+    private static final Logger logger = LoggerFactory.getLogger(DuocountClient.class);
     private final String url = "http://localhost:8080";
     private String userName;
     public static void main(String[] args) {
@@ -109,7 +115,7 @@ public class DuocountClient extends Application {
                 walletsList.getItems().add(walletElement.getAsString());
             }
         } catch (Exception e) {
-            e.printStackTrace();
+
             showAlert("Error", "Failed to parse wallets response.");
         }
     }
@@ -163,7 +169,7 @@ public class DuocountClient extends Application {
                     data.append("&participant=").append(URLEncoder.encode(participant.trim(), StandardCharsets.UTF_8));
                 }
 
-                System.out.println("Sending add expense request: " + data);
+                logger.info("Sending add expense request: {}", data);
 
                 if (sendPostRequest("/expense", data.toString())) {
                     showAlert("Success", "Expense added successfully!");
@@ -191,13 +197,13 @@ public class DuocountClient extends Application {
         Label walletLabel = new Label("Wallet: " + walletName);
 
         Label expensesLabel = new Label("Expenses:");
-        ListView<String> expensesList = new ListView<>();
+        ListView<HBox> expensesList = new ListView<>();
 
         Label settlementsLabel = new Label("Settlements:");
         ListView<String> settlementsList = new ListView<>();
 
         String response = sendGetRequest("/wallet/" + walletName);
-        System.out.println("Server response for wallet details: " + response);
+        logger.info("Server response for wallet details: {}", response);
 
         if (response != null && !response.isEmpty()) {
             try {
@@ -205,20 +211,31 @@ public class DuocountClient extends Application {
                 JsonObject jsonObject = gson.fromJson(response, JsonObject.class);
 
                 JsonArray expenses = jsonObject.getAsJsonArray("expenses");
-                if (expenses != null) {
+                if (expenses != null && !expenses.isEmpty()) {
                     for (JsonElement expenseElement : expenses) {
                         JsonObject expense = expenseElement.getAsJsonObject();
-                        String description = expense.get("description").getAsString();
-                        double amount = expense.get("amount").getAsDouble();
-                        String payer = expense.get("payer").getAsString();
-                        expensesList.getItems().add(String.format("%s paid %.2f for %s", payer, amount, description));
+                        String description = expense.has("description") ? expense.get("description").getAsString() : "N/A";
+                        double amount = expense.has("amount") ? expense.get("amount").getAsDouble() : 0.0;
+                        String payer = expense.has("payer") ? expense.get("payer").getAsString() : "Unknown";
+                        int expenseId = expense.has("id") ? expense.get("id").getAsInt() : -1;
+
+                        HBox expenseRow = new HBox(10);
+                        Label expenseLabel = new Label(String.format("%s paid %.2f for %s", payer, amount, description));
+                        Button deleteButton = new Button("X");
+                        deleteButton.setOnAction(e -> deleteExpense(expenseId, walletName, stage));
+
+                        expenseRow.getChildren().addAll(expenseLabel, deleteButton);
+                        expensesList.getItems().add(expenseRow);
                     }
                 } else {
-                    expensesList.getItems().add("No expenses available.");
+                    HBox noExpensesRow = new HBox(10);
+                    Label noExpensesLabel = new Label("No expenses available.");
+                    noExpensesRow.getChildren().add(noExpensesLabel);
+                    expensesList.getItems().add(noExpensesRow);
                 }
 
                 JsonArray settlements = jsonObject.getAsJsonArray("settlements");
-                if (settlements != null) {
+                if (settlements != null && !settlements.isEmpty()) {
                     for (JsonElement settlementElement : settlements) {
                         JsonObject settlement = settlementElement.getAsJsonObject();
                         String from = settlement.get("from").getAsString();
@@ -230,12 +247,9 @@ public class DuocountClient extends Application {
                     settlementsList.getItems().add("No settlements available.");
                 }
             } catch (Exception e) {
-                e.printStackTrace();
+                logger.error(e.toString());
                 showAlert("Error", "Failed to load wallet details.");
             }
-        } else {
-            expensesList.getItems().add("No expenses available.");
-            settlementsList.getItems().add("No settlements available.");
         }
 
         Button addExpenseButton = new Button("Add Expense");
@@ -253,8 +267,21 @@ public class DuocountClient extends Application {
                 addExpenseButton,
                 backButton
         );
+
         Scene detailsScene = new Scene(detailsLayout, 600, 600);
         stage.setScene(detailsScene);
+    }
+
+    private void deleteExpense(int expenseId, String walletName, Stage stage) {
+        String data = "expenseId=" + expenseId + "&walletName=" + URLEncoder.encode(walletName, StandardCharsets.UTF_8);
+        boolean success = sendPostRequest("/deleteExpense", data);
+
+        if (success) {
+            showAlert("Success", "Expense deleted successfully.");
+            showWalletDetailsView(stage, walletName);
+        } else {
+            showAlert("Error", "Failed to delete expense.");
+        }
     }
 
 
@@ -270,7 +297,7 @@ public class DuocountClient extends Application {
             }
             return connection.getResponseCode() == 200;
         } catch (Exception e) {
-            e.printStackTrace();
+            logger.error(e.toString());
             return false;
         }
     }
@@ -290,7 +317,7 @@ public class DuocountClient extends Application {
                 return response.toString();
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            logger.error(e.toString());
         }
         return null;
     }

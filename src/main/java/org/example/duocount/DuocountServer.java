@@ -6,25 +6,24 @@ import com.google.gson.JsonObject;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.*;
-
-import static org.example.duocount.Database.getConnection;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 public class DuocountServer {
+    private static final Logger logger = LoggerFactory.getLogger(DuocountServer.class);
 
     public static void main(String[] args) throws IOException {
         HttpServer server = HttpServer.create(new InetSocketAddress(8080), 0);
@@ -35,11 +34,45 @@ public class DuocountServer {
         server.createContext("/expense", new ExpenseHandler());
         server.createContext("/wallets", new AllWalletsHandler());
         server.createContext("/wallet/", new WalletDetailsHandler(threadPool));
+        server.createContext("/deleteExpense", new DeleteExpenseHandler());
+        logger.info("Registering endpoint: /user");
+        logger.info("Registering endpoint: /wallet");
+        logger.info("Registering endpoint: /expense");
+        logger.info("Registering endpoint: /wallets");
+        logger.info("Registering endpoint: /wallet/");
+        logger.info("Registering endpoint: /deleteExpense");
+
+
 
         server.setExecutor(threadPool);
 
-        System.out.println("Server started on port 8080");
+        logger.info("Server started on port 8080");
         server.start();
+    }
+
+    private static void sendResponse(HttpExchange exchange, int statusCode, String response) throws IOException {
+        exchange.sendResponseHeaders(statusCode, response.getBytes().length);
+        logger.debug("Sending response with status code: {}, body: {}", statusCode, response);
+        try (OutputStream os = exchange.getResponseBody()) {
+            os.write(response.getBytes());
+        }
+    }
+
+    private static Map<String, List<String>> parseRequestBody(String requestBody) {
+        logger.debug("Raw request body: {}", requestBody);
+        Map<String, List<String>> params = new HashMap<>();
+        String[] pairs = requestBody.split("&");
+        for (String pair : pairs) {
+            String[] keyValue = pair.split("=", 2);
+            if (keyValue.length == 2) {
+                String key = keyValue[0];
+                String value = URLDecoder.decode(keyValue[1], StandardCharsets.UTF_8);
+
+                params.computeIfAbsent(key, k -> new ArrayList<>()).add(value);
+            }
+        }
+        logger.debug("Parsed parameters: {}", params);
+        return params;
     }
 
     static class UserHandler implements HttpHandler {
@@ -54,10 +87,13 @@ public class DuocountServer {
             String name = requestBody.split("=")[1];
 
             int userId = Database.addUser(name);
+            logger.info("Received request to add user with name: {}", name);
             if (userId != -1) {
                 sendResponse(exchange, 200, "User added: " + name);
+                logger.info("User added successfully with ID: {}", userId);
             } else {
                 sendResponse(exchange, 500, "Failed to add user.");
+                logger.error("Failed to add user: {}", name);
             }
         }
     }
@@ -74,10 +110,13 @@ public class DuocountServer {
             String name = requestBody.split("=")[1];
 
             int walletId = Database.addWallet(name);
+            logger.info("Received request to create wallet with name: {}", name);
             if (walletId != -1) {
                 sendResponse(exchange, 200, "Wallet created: " + name);
+                logger.info("Wallet created successfully with ID: {}", walletId);
             } else {
                 sendResponse(exchange, 500, "Failed to create wallet.");
+                logger.error("Failed to create wallet: {}", name);
             }
         }
     }
@@ -107,23 +146,27 @@ public class DuocountServer {
                 List<String> participantNames = params.getOrDefault("participant", new ArrayList<>());
                 for (String participantName : participantNames) {
                     int participantId = Database.getUserIdByName(participantName);
-                    if (participantId == -1) throw new IllegalArgumentException("Participant not found: " + participantName);
+                    if (participantId == -1)
+                        throw new IllegalArgumentException("Participant not found: " + participantName);
                     participantIds.add(participantId);
-                    System.out.println("Adding participant: " + participantName + " (ID: " + participantId + ")");
+                    logger.info("Adding participant: {} (ID: {})", participantName, participantId);
                 }
 
-                System.out.println("Creating expense in wallet: " + walletName);
-                System.out.println("Payer: " + payerName + ", Amount: " + amount);
-                System.out.println("Participants: " + participantIds);
+                logger.info("Creating expense in wallet: {}", walletName);
+                logger.info("Payer: {}, Amount: {}", payerName, amount);
+                logger.info("Participants: {}", participantIds);
 
                 if (participantIds.isEmpty()) {
                     throw new IllegalArgumentException("At least one participant is required.");
                 }
 
                 int expenseId = Database.addExpense(walletId, payerId, description, amount, participantIds);
+                logger.info("Received expense creation request for wallet: {}, payer: {}, amount: {}, description: {}", walletName, payerName, amount, description);
                 if (expenseId == -1) {
+                    logger.error("Failed to create expense for wallet: {}", walletName);
                     throw new IllegalArgumentException("Expense not created.");
                 }
+                logger.info("Expense created successfully with ID: {}", expenseId);
                 sendResponse(exchange, 200, "Expense added successfully.");
             } catch (Exception e) {
                 e.printStackTrace();
@@ -155,11 +198,13 @@ public class DuocountServer {
                 return;
             }
 
+            logger.info("Fetching wallet details for wallet: {}, ID: {}", walletName, walletId);
             Future<JsonObject> task = threadPool.submit(new SettlementCalculator(walletId));
+            logger.info("Settlement calculation completed successfully for wallet ID: {}", walletId);
 
             try {
                 JsonObject jsonResponse = task.get();
-                System.out.println("Wallet details response: " + jsonResponse);
+                logger.info("Wallet details response: {}", jsonResponse);
                 sendResponse(exchange, 200, new Gson().toJson(jsonResponse));
             } catch (Exception e) {
                 e.printStackTrace();
@@ -188,52 +233,50 @@ public class DuocountServer {
         }
     }
 
-    private static void sendResponse(HttpExchange exchange, int statusCode, String response) throws IOException {
-        exchange.sendResponseHeaders(statusCode, response.getBytes().length);
-        try (OutputStream os = exchange.getResponseBody()) {
-            os.write(response.getBytes());
-        }
-    }
-
-    private static Map<String, List<String>> parseRequestBody(String requestBody) {
-        Map<String, List<String>> params = new HashMap<>();
-        String[] pairs = requestBody.split("&");
-        for (String pair : pairs) {
-            String[] keyValue = pair.split("=", 2);
-            if (keyValue.length == 2) {
-                String key = keyValue[0];
-                String value = URLDecoder.decode(keyValue[1], StandardCharsets.UTF_8);
-
-                params.computeIfAbsent(key, k -> new ArrayList<>()).add(value);
+    static class DeleteExpenseHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                sendResponse(exchange, 405, "Method Not Allowed");
+                return;
             }
-        }
-        return params;
-    }
 
-    public static HashMap<String, Double> getUserBalances(int walletId) {
-        HashMap<String, Double> balances = new HashMap<>();
-        String query = """
-        SELECT u.name AS user_name, ub.balance
-        FROM user_balances ub
-        JOIN users u ON ub.user_id = u.id
-        WHERE ub.wallet_id = ?
-    """;
+            String requestBody = new String(exchange.getRequestBody().readAllBytes());
+            logger.info("Request Body: " + requestBody);
 
-        try (Connection conn = getConnection();
-             PreparedStatement stmt = conn.prepareStatement(query)) {
-            stmt.setInt(1, walletId);
-            try (ResultSet rs = stmt.executeQuery()) {
-                while (rs.next()) {
-                    String userName = rs.getString("user_name");
-                    double balance = rs.getDouble("balance");
-                    balances.put(userName, balance);
+            try {
+                Map<String, List<String>> rawParams = parseRequestBody(requestBody);
+                HashMap<String, String> params = new HashMap<>();
+                rawParams.forEach((key, valueList) -> {
+                    if (!valueList.isEmpty()) {
+                        params.put(key, valueList.get(0));
+                    }
+                });
+
+                logger.info("Parsed Parameters: {}", params);
+
+                int expenseId = Integer.parseInt(params.get("expenseId"));
+                String walletName = params.get("walletName");
+
+                int walletId = Database.getWalletIdByName(walletName);
+                if (walletId == -1) {
+                    sendResponse(exchange, 404, "Wallet not found.");
+                    return;
                 }
+
+                logger.info("Deleting Expense ID: {}, Wallet ID: {}", expenseId, walletId);
+
+                boolean success = Database.deleteExpense(expenseId, walletId);
+                if (success) {
+                    sendResponse(exchange, 200, "Expense deleted successfully.");
+                } else {
+                    logger.error("Deletion failed for Expense ID: {}, Wallet ID: {}", expenseId, walletId);
+                    sendResponse(exchange, 404, "Expense not found or could not be deleted.");
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+                sendResponse(exchange, 500, "Error: " + e.getMessage());
             }
-        } catch (SQLException e) {
-            e.printStackTrace();
         }
-
-        return balances;
     }
-
 }
