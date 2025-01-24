@@ -12,10 +12,17 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.*;
+
+import static org.example.duocount.Database.getConnection;
 
 public class DuocountServer {
 
@@ -23,10 +30,9 @@ public class DuocountServer {
         HttpServer server = HttpServer.create(new InetSocketAddress(8080), 0);
         ExecutorService threadPool = Executors.newFixedThreadPool(10);
 
-        server.createContext("/hello", new HelloHandler());
-        server.createContext("/expense", new ExpenseHandler());
         server.createContext("/user", new UserHandler());
         server.createContext("/wallet", new WalletHandler());
+        server.createContext("/expense", new ExpenseHandler());
         server.createContext("/wallets", new AllWalletsHandler());
         server.createContext("/wallet/", new WalletDetailsHandler(threadPool));
 
@@ -35,67 +41,6 @@ public class DuocountServer {
         System.out.println("Server started on port 8080");
         server.start();
     }
-
-    static class HelloHandler implements HttpHandler {
-        @Override
-        public void handle(HttpExchange exchange) throws IOException {
-            sendResponse(exchange, 200, "Hello, World!");
-        }
-    }
-
-    static class ExpenseHandler implements HttpHandler {
-        @Override
-        public void handle(HttpExchange exchange) throws IOException {
-            if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
-                sendResponse(exchange, 405, "Method Not Allowed");
-                return;
-            }
-
-            String requestBody = new String(exchange.getRequestBody().readAllBytes());
-            try {
-                HashMap<String, String> params = parseRequestBody(requestBody);
-                String walletName = params.get("wallet");
-                String description = params.get("description");
-                double amount = Double.parseDouble(params.get("amount"));
-                String payerName = params.get("payer");
-
-                int walletId = Database.getWalletIdByName(walletName);
-                if (walletId == -1) throw new IllegalArgumentException("Wallet not found: " + walletName);
-
-                int payerId = Database.getUserIdByName(payerName);
-                if (payerId == -1) throw new IllegalArgumentException("Payer not found: " + payerName);
-
-                int expenseId = Database.addExpense(walletId, payerId, description, amount);
-
-                List<Integer> participantIds = new ArrayList<>();
-                for (String key : params.keySet()) {
-                    if (key.startsWith("participant")) {
-                        String participantName = params.get(key);
-                        int participantId = Database.getUserIdByName(participantName);
-                        if (participantId == -1) throw new IllegalArgumentException("Participant not found: " + participantName);
-                        participantIds.add(participantId);
-                    }
-                }
-
-                double share = amount / participantIds.size();
-
-                for (int participantId : participantIds) {
-                    Database.addExpenseParticipant(expenseId, participantId, share);
-                }
-
-                // Payer covers their own full payment
-                if (!participantIds.contains(payerId)) {
-                    Database.addExpenseParticipant(expenseId, payerId, -amount);
-                }
-
-                sendResponse(exchange, 200, "Expense added successfully.");
-            } catch (Exception e) {
-                e.printStackTrace();
-                sendResponse(exchange, 500, "Error: " + e.getMessage());
-            }
-        }
-    }
-
 
     static class UserHandler implements HttpHandler {
         @Override
@@ -110,9 +55,9 @@ public class DuocountServer {
 
             int userId = Database.addUser(name);
             if (userId != -1) {
-                sendResponse(exchange, 200, "User logged in: " + name + " (ID: " + userId + ")");
+                sendResponse(exchange, 200, "User added: " + name);
             } else {
-                sendResponse(exchange, 500, "Failed to add or log in user.");
+                sendResponse(exchange, 500, "Failed to add user.");
             }
         }
     }
@@ -133,6 +78,56 @@ public class DuocountServer {
                 sendResponse(exchange, 200, "Wallet created: " + name);
             } else {
                 sendResponse(exchange, 500, "Failed to create wallet.");
+            }
+        }
+    }
+
+    static class ExpenseHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                sendResponse(exchange, 405, "Method Not Allowed");
+                return;
+            }
+
+            String requestBody = new String(exchange.getRequestBody().readAllBytes());
+            try {
+                Map<String, List<String>> params = parseRequestBody(requestBody);
+                String payerName = params.get("payer").get(0);
+                String walletName = params.get("wallet").get(0);
+                String description = params.get("description").get(0);
+                double amount = Double.parseDouble(params.get("amount").get(0));
+
+                int walletId = Database.getWalletIdByName(walletName);
+                if (walletId == -1) throw new IllegalArgumentException("Wallet not found: " + walletName);
+
+                int payerId = Database.getUserIdByName(payerName);
+
+                List<Integer> participantIds = new ArrayList<>();
+                List<String> participantNames = params.getOrDefault("participant", new ArrayList<>());
+                for (String participantName : participantNames) {
+                    int participantId = Database.getUserIdByName(participantName);
+                    if (participantId == -1) throw new IllegalArgumentException("Participant not found: " + participantName);
+                    participantIds.add(participantId);
+                    System.out.println("Adding participant: " + participantName + " (ID: " + participantId + ")");
+                }
+
+                System.out.println("Creating expense in wallet: " + walletName);
+                System.out.println("Payer: " + payerName + ", Amount: " + amount);
+                System.out.println("Participants: " + participantIds);
+
+                if (participantIds.isEmpty()) {
+                    throw new IllegalArgumentException("At least one participant is required.");
+                }
+
+                int expenseId = Database.addExpense(walletId, payerId, description, amount, participantIds);
+                if (expenseId == -1) {
+                    throw new IllegalArgumentException("Expense not created.");
+                }
+                sendResponse(exchange, 200, "Expense added successfully.");
+            } catch (Exception e) {
+                e.printStackTrace();
+                sendResponse(exchange, 500, "Error: " + e.getMessage());
             }
         }
     }
@@ -170,11 +165,8 @@ public class DuocountServer {
                 e.printStackTrace();
                 sendResponse(exchange, 500, "{\"error\": \"Failed to calculate settlements.\"}");
             }
-
         }
     }
-
-
 
     static class AllWalletsHandler implements HttpHandler {
         @Override
@@ -203,16 +195,45 @@ public class DuocountServer {
         }
     }
 
-    private static HashMap<String, String> parseRequestBody(String requestBody) {
-        HashMap<String, String> params = new HashMap<>();
+    private static Map<String, List<String>> parseRequestBody(String requestBody) {
+        Map<String, List<String>> params = new HashMap<>();
         String[] pairs = requestBody.split("&");
         for (String pair : pairs) {
             String[] keyValue = pair.split("=", 2);
             if (keyValue.length == 2) {
-                params.put(keyValue[0], keyValue[1]);
+                String key = keyValue[0];
+                String value = URLDecoder.decode(keyValue[1], StandardCharsets.UTF_8);
+
+                params.computeIfAbsent(key, k -> new ArrayList<>()).add(value);
             }
         }
         return params;
+    }
+
+    public static HashMap<String, Double> getUserBalances(int walletId) {
+        HashMap<String, Double> balances = new HashMap<>();
+        String query = """
+        SELECT u.name AS user_name, ub.balance
+        FROM user_balances ub
+        JOIN users u ON ub.user_id = u.id
+        WHERE ub.wallet_id = ?
+    """;
+
+        try (Connection conn = getConnection();
+             PreparedStatement stmt = conn.prepareStatement(query)) {
+            stmt.setInt(1, walletId);
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    String userName = rs.getString("user_name");
+                    double balance = rs.getDouble("balance");
+                    balances.put(userName, balance);
+                }
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+
+        return balances;
     }
 
 }

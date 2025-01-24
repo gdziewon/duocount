@@ -2,6 +2,7 @@ package org.example.duocount;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -18,11 +19,11 @@ public class SettlementCalculator implements Callable<JsonObject> {
     public JsonObject call() {
         System.out.println("Starting settlement calculation for wallet ID: " + walletId);
 
+        HashMap<String, Double> netBalances = Database.getUserBalances(walletId);
+        System.out.println("Net balances retrieved: " + netBalances);
+
         List<JsonObject> expenses = Database.getWalletDetails(walletId);
         System.out.println("Expenses retrieved: " + expenses);
-
-        HashMap<String, Double> netBalances = Database.calculateNetBalances(walletId);
-        System.out.println("Net balances calculated: " + netBalances);
 
         List<JsonObject> settlements = calculateSettlements(netBalances);
         System.out.println("Settlements calculated: " + settlements);
@@ -30,9 +31,7 @@ public class SettlementCalculator implements Callable<JsonObject> {
         JsonObject jsonResponse = new JsonObject();
 
         JsonArray expensesArray = new JsonArray();
-        for (JsonObject expense : expenses) {
-            expensesArray.add(expense);
-        }
+        expenses.forEach(expensesArray::add);
         jsonResponse.add("expenses", expensesArray);
 
         JsonArray settlementsArray = new JsonArray();
@@ -42,8 +41,6 @@ public class SettlementCalculator implements Callable<JsonObject> {
         System.out.println("Response JSON: " + jsonResponse);
         return jsonResponse;
     }
-
-
 
     private List<JsonObject> calculateSettlements(HashMap<String, Double> netBalances) {
         List<JsonObject> settlements = new ArrayList<>();
@@ -65,6 +62,7 @@ public class SettlementCalculator implements Callable<JsonObject> {
             }
         }
 
+        // Match creditors and debtors to minimize the number of transactions
         int creditorIndex = 0, debtorIndex = 0;
         while (creditorIndex < creditors.size() && debtorIndex < debtors.size()) {
             String creditor = creditors.get(creditorIndex);
@@ -81,14 +79,15 @@ public class SettlementCalculator implements Callable<JsonObject> {
             settlement.addProperty("amount", amount);
             settlements.add(settlement);
 
+            // Update remaining balances
             credits.put(creditor, credit - amount);
             debits.put(debtor, debit - amount);
 
+            // Move to the next creditor or debtor if balance is zero
             if (credits.get(creditor) == 0) creditorIndex++;
             if (debits.get(debtor) == 0) debtorIndex++;
         }
 
         return settlements;
     }
-
 }

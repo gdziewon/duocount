@@ -163,10 +163,12 @@ public class DuocountClient extends Application {
                     data.append("&participant=").append(URLEncoder.encode(participant.trim(), StandardCharsets.UTF_8));
                 }
 
+                System.out.println("Sending add expense request: " + data);
+
                 if (sendPostRequest("/expense", data.toString())) {
                     showAlert("Success", "Expense added successfully!");
                     addExpenseStage.close();
-                    showWalletDetailsView(parentStage, walletName); // Refresh details view
+                    showWalletDetailsView(parentStage, walletName);
                 } else {
                     showAlert("Error", "Failed to add expense.");
                 }
@@ -206,9 +208,9 @@ public class DuocountClient extends Application {
                 if (expenses != null) {
                     for (JsonElement expenseElement : expenses) {
                         JsonObject expense = expenseElement.getAsJsonObject();
-                        String description = expense.has("description") ? expense.get("description").getAsString() : "N/A";
-                        double amount = expense.has("amount") ? expense.get("amount").getAsDouble() : 0.0;
-                        String payer = expense.has("payer") ? expense.get("payer").getAsString() : "Unknown";
+                        String description = expense.get("description").getAsString();
+                        double amount = expense.get("amount").getAsDouble();
+                        String payer = expense.get("payer").getAsString();
                         expensesList.getItems().add(String.format("%s paid %.2f for %s", payer, amount, description));
                     }
                 } else {
@@ -235,7 +237,6 @@ public class DuocountClient extends Application {
             expensesList.getItems().add("No expenses available.");
             settlementsList.getItems().add("No settlements available.");
         }
-
 
         Button addExpenseButton = new Button("Add Expense");
         addExpenseButton.setOnAction(e -> showAddExpenseWindow(stage, walletName));
