@@ -24,7 +24,8 @@ import java.nio.charset.StandardCharsets;
 
 public class DuocountClient extends Application {
     private static final Logger logger = LoggerFactory.getLogger(DuocountClient.class);
-    private final String url = "http://localhost:8080";
+    private final String ipAddress = "192.168.100.159";
+    private final String url = "http://" + ipAddress + ":8080";
     private String userName;
     public static void main(String[] args) {
         launch(args);
